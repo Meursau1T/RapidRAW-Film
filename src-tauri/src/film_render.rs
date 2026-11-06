@@ -200,6 +200,14 @@ fn get_or_build_pipeline(
     let t = std::time::Instant::now();
     let film = load_profile_by_name(&engine.data_dir, &sel.film_stock)
         .map_err(|e| format!("Unknown film stock '{}': {}", sel.film_stock, e))?;
+    // Legacy adjustments may still reference a print stock (e.g. kodak_2383)
+    // as the camera film — that combination collapses to a flat green image.
+    if !film.is_filming() {
+        log::warn!(
+            "'{}' is a {}-stage print stock, not a camera film; output is not meaningful",
+            sel.film_stock, film.info.stage
+        );
+    }
     let print_name = if sel.print_paper.is_empty() {
         film.info
             .target_print
@@ -583,8 +591,12 @@ pub fn list_film_profiles(app_handle: tauri::AppHandle) -> Result<Value, String>
             channel_model: p.info.channel_model.clone(),
             development_times: p.data.development_time.clone(),
         };
-        match p.info.support.as_str() {
-            "paper" => papers.push(item),
+        // Classify by *stage*, not support: cine print stocks (kodak_2383,
+        // 2393, 2302) sit on film base (support="film") but are print media
+        // (stage="printing"). Splitting by support put them in the camera
+        // film picker, where the engine collapsed to a flat green image.
+        match p.info.stage.as_str() {
+            "printing" => papers.push(item),
             _ => films.push(item),
         }
     }
