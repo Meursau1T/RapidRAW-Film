@@ -1127,7 +1127,8 @@
         "settings.use_fast_stats": "Fast statistics",
         "settings.neutral_print_filters_from_database": "Neutral filters from database"
       },
-      "engineActiveNotice": "Film engine is active: classic adjustments below are bypassed. White balance still applies upstream; use masks for local film/print exposure."
+      "engineActiveNotice": "Film engine is active: classic adjustments below are bypassed. White balance still applies upstream; use masks for local film/print exposure.",
+      "reversalScanNotice": "Slide (reversal) film — scanned directly, no print paper."
     }
   },
   "export": {

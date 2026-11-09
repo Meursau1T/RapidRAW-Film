@@ -1124,7 +1124,8 @@
         "settings.use_fast_stats": "快速统计",
         "settings.neutral_print_filters_from_database": "中性滤镜取自数据库"
       },
-      "engineActiveNotice": "胶片引擎已启用：以下经典调整不生效。白平衡仍在上游生效；局部胶片/相纸曝光请使用蒙板。"
+      "engineActiveNotice": "胶片引擎已启用：以下经典调整不生效。白平衡仍在上游生效；局部胶片/相纸曝光请使用蒙板。",
+      "reversalScanNotice": "反转片（幻灯片）——直接扫描胶片，无需相纸。"
     }
   },
   "export": {

@@ -28,7 +28,7 @@ use serde_json::Value;
 
 use spektrafilm_core::params::RuntimeParams;
 use spektrafilm_core::pipeline::{ExposureMaps, Pipeline};
-use spektrafilm_core::profile::{load_profile, load_profile_by_name};
+use spektrafilm_core::profile::{load_profile, load_profile_by_name, Profile};
 use spektrafilm_gpu::ComputeBackend;
 use spektrafilm_gpu::cpu_backend::CpuBackend;
 use spektrafilm_gpu::wgpu_backend::WgpuBackend;
@@ -190,6 +190,38 @@ fn deep_merge(base: &mut Value, overlay: &Value) {
     }
 }
 
+/// Decide which print profile the pipeline is built with and whether the
+/// film is scanned directly instead (printing stage skipped).
+///
+/// Reversal (positive) stocks — Kodachrome, Ektachrome, Velvia, Provia —
+/// carry no `target_print`: the developed film IS the final image. Running
+/// it through the (negative-working) printing stage inverts it a second
+/// time, which is exactly the "negative image" symptom seen when the paper
+/// silently fell back to the default. Upstream refuses this combination
+/// (CLI bails unless `--scan-film` is given); RapidRAW selects the scan
+/// path automatically instead of erroring out of the render loop.
+fn resolve_print_stock(film: &Profile, print_paper: &str, film_stock: &str) -> (String, bool) {
+    // An explicitly chosen paper always wins — upstream also allows
+    // deliberately printing a slide (reversal print) via --paper.
+    if !print_paper.is_empty() {
+        return (print_paper.to_string(), false);
+    }
+    if let Some(target) = film.info.target_print.clone() {
+        return (target, false);
+    }
+    if film.is_positive() {
+        // Scan the developed slide directly. The constructor still needs a
+        // print profile for its calibration math, so mirror the upstream
+        // CLI, which passes the film itself in --scan-film mode; the
+        // filming→scanning chain never reads it.
+        return (film_stock.to_string(), true);
+    }
+    // Negative stock without a target print (e.g. B&W Double-X): printing
+    // on the default paper is precisely what makes the scan come out
+    // positive — a direct scan of a negative would itself look inverted.
+    ("fujifilm_crystal_archive_typeii".to_string(), false)
+}
+
 fn get_or_build_pipeline(
     engine: &mut FilmEngineState,
     sel: &FilmSelection,
@@ -208,24 +240,36 @@ fn get_or_build_pipeline(
             sel.film_stock, film.info.stage
         );
     }
-    let print_name = if sel.print_paper.is_empty() {
-        film.info
-            .target_print
-            .clone()
-            .unwrap_or_else(|| "fujifilm_crystal_archive_typeii".to_string())
-    } else {
-        sel.print_paper.clone()
-    };
+    let (print_name, scan_film) = resolve_print_stock(&film, &sel.print_paper, &sel.film_stock);
+    // The override is a pure function of the hashed selection (film stock +
+    // paper + params), so the pipeline cache key stays coherent without
+    // re-hashing here.
+    let mut params = sel.params.clone();
+    if scan_film && !params.io.scan_film {
+        log::info!(
+            "'{}' is a reversal film with no target print; scanning film directly",
+            sel.film_stock
+        );
+        params.io.scan_film = true;
+    }
     let print = load_profile_by_name(&engine.data_dir, &print_name)
         .map_err(|e| format!("Unknown print paper '{}': {}", print_name, e))?;
-    let pipeline = Pipeline::new_with_spectral(film, print, sel.params.clone(), &engine.data_dir)
+    let pipeline = Pipeline::new_with_spectral(film, print, params, &engine.data_dir)
         .map_err(|e| format!("Film pipeline build failed: {}", e))?;
-    log::info!(
-        "Film pipeline built for {} / {} in {:?}",
-        sel.film_stock,
-        print_name,
-        t.elapsed()
-    );
+    if scan_film {
+        log::info!(
+            "Film pipeline built for {} (film scan) in {:?}",
+            sel.film_stock,
+            t.elapsed()
+        );
+    } else {
+        log::info!(
+            "Film pipeline built for {} / {} in {:?}",
+            sel.film_stock,
+            print_name,
+            t.elapsed()
+        );
+    }
     let pipeline = Arc::new(pipeline);
     engine.pipelines.insert(sel.hash, Arc::clone(&pipeline));
     // Keep the cache bounded; rebuilds are tens of ms.
@@ -740,6 +784,43 @@ mod tests {
         "settings.use_fast_stats",
         "settings.neutral_print_filters_from_database",
     ];
+
+    /// Reversal (positive) stocks have no `target_print` — printing them on
+    /// the default paper inverts the image a second time (the "negative
+    /// look" regression). They must fall back to a direct film scan, while
+    /// negative stocks keep their printing path.
+    #[test]
+    fn reversal_films_fall_back_to_film_scan() {
+        let dir = film_data_dir(None);
+
+        // Kodachrome 64 (positive, no target print) → direct scan, with the
+        // film standing in as the unused print profile (upstream CLI parity).
+        let film = load_profile_by_name(&dir, "kodak_kodachrome_64").unwrap();
+        assert!(film.is_positive());
+        let (paper, scan) = resolve_print_stock(&film, "", "kodak_kodachrome_64");
+        assert!(scan, "reversal film without paper must scan the film directly");
+        assert_eq!(paper, "kodak_kodachrome_64");
+
+        // An explicitly chosen paper still wins — upstream also allows
+        // deliberately printing a slide via --paper.
+        let (paper, scan) = resolve_print_stock(&film, "kodak_endura_premier", "kodak_kodachrome_64");
+        assert!(!scan);
+        assert_eq!(paper, "kodak_endura_premier");
+
+        // Negative stocks keep their target print.
+        let film = load_profile_by_name(&dir, "kodak_portra_400").unwrap();
+        let (paper, scan) = resolve_print_stock(&film, "", "kodak_portra_400");
+        assert!(!scan);
+        assert_eq!(paper, "kodak_portra_endura");
+
+        // Negative stocks without a target print (B&W Double-X) keep the
+        // default paper: a direct scan of a negative would itself look
+        // inverted, printing is what yields the positive.
+        let film = load_profile_by_name(&dir, "kodak_doublex").unwrap();
+        let (paper, scan) = resolve_print_stock(&film, "", "kodak_doublex");
+        assert!(!scan);
+        assert_eq!(paper, "fujifilm_crystal_archive_typeii");
+    }
 
     #[test]
     fn panel_param_paths_resolve_in_runtime_params() {

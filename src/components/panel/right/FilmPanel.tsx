@@ -1141,6 +1141,12 @@ export default function FilmPanel() {
     };
   }, [films, papers, fs.filmStock, fs.printPaper]);
 
+  const selectedFilm = useMemo(() => films.find((f) => f.name === fs.filmStock), [films, fs.filmStock]);
+  // Slide (reversal) stocks carry no target print: the backend scans the
+  // developed film directly instead of printing it (printing a slide on
+  // negative paper would invert it to a negative). Reflect that here.
+  const isReversal = selectedFilm?.kind === 'positive';
+
   const filmOptions = useMemo(() => films.map((f) => ({ value: f.name, label: f.label })), [films]);
   const paperOptions = useMemo(
     () => [{ value: '', label: t('editor.film.autoPaper') }, ...papers.map((p) => ({ value: p.name, label: p.label }))],
@@ -1327,18 +1333,30 @@ export default function FilmPanel() {
                 <Dropdown
                   options={filmOptions}
                   value={fs.filmStock}
-                  onChange={(v) => update({ filmStock: v })}
+                  onChange={(v) => {
+                    const next = films.find((f) => f.name === v);
+                    // Switching to a slide stock: drop any picked paper —
+                    // keeping it would print (and invert) the slide.
+                    const clearPaper = next?.kind === 'positive' && fs.printPaper !== '';
+                    update(clearPaper ? { filmStock: v, printPaper: '' } : { filmStock: v });
+                  }}
                   searchPlaceholder={t('editor.film.searchStock')}
                 />
               </div>
               <div className="flex flex-col gap-1.5">
                 <Text variant={TextVariants.label}>{t('editor.film.printPaper')}</Text>
                 <Dropdown
+                  disabled={isReversal}
                   options={paperOptions}
-                  value={fs.printPaper}
+                  value={isReversal ? '' : fs.printPaper}
                   onChange={(v) => update({ printPaper: v })}
                   searchPlaceholder={t('editor.film.searchPaper')}
                 />
+                {isReversal && (
+                  <Text variant={TextVariants.small} className="text-text-secondary">
+                    {t('editor.film.reversalScanNotice')}
+                  </Text>
+                )}
               </div>
             </>
           )}
